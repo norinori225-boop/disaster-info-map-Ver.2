@@ -1,5 +1,5 @@
 // 災害・工事情報共有マップ Service Worker
-const CACHE = 'saigai-map-v1';
+const CACHE = 'saigai-map-v2';
 
 // アプリシェル（ローカルの静的ファイルのみキャッシュ）
 const ASSETS = [
