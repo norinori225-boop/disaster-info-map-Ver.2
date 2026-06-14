@@ -1,0 +1,730 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>災害・工事情報共有マップ Ver.2</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-database-compat.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html,body { height:100%; font-family:"Hiragino Sans","Yu Gothic",sans-serif; overscroll-behavior:none; }
+  #map { position:absolute; inset:0; }
+
+  /* ヘッダー */
+  .header {
+    position:absolute; top:0; left:0; right:0; z-index:1000;
+    background:rgba(255,255,255,.95); box-shadow:0 1px 6px rgba(0,0,0,.2);
+    padding:8px 10px; display:flex; align-items:center; gap:8px;
+  }
+  .header h1 { font-size:15px; flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .header h1 .ver { font-size:10px; color:#1a73e8; font-weight:bold; margin-left:4px; }
+  .mode-badge { font-size:10px; padding:3px 8px; border-radius:10px; white-space:nowrap; }
+  .mode-online { background:#d4f7d4; color:#1a7a1a; }
+  .mode-local  { background:#ffe9c7; color:#9a6200; }
+  .icon-btn {
+    width:36px; height:36px; border:none; border-radius:8px; background:#f0f0f0;
+    font-size:17px; cursor:pointer; flex-shrink:0;
+  }
+
+  /* カテゴリフィルタ */
+  .filters {
+    position:absolute; top:54px; left:0; right:0; z-index:1000;
+    display:flex; gap:6px; padding:6px 10px; overflow-x:auto;
+    scrollbar-width:none;
+  }
+  .filters::-webkit-scrollbar { display:none; }
+  .chip {
+    flex-shrink:0; padding:6px 12px; border-radius:16px; border:2px solid transparent;
+    background:rgba(255,255,255,.95); box-shadow:0 1px 4px rgba(0,0,0,.2);
+    font-size:12px; cursor:pointer; user-select:none;
+  }
+  .chip.off { opacity:.4; }
+
+  /* FAB */
+  .fab {
+    position:absolute; right:14px; bottom:28px; z-index:1000;
+    width:58px; height:58px; border-radius:50%; border:none;
+    background:#1a73e8; color:#fff; font-size:30px; line-height:58px;
+    box-shadow:0 3px 10px rgba(0,0,0,.35); cursor:pointer;
+  }
+  .fab.cancel { background:#d93025; font-size:22px; }
+  .fab-loc {
+    position:absolute; right:21px; bottom:100px; z-index:1000;
+    width:44px; height:44px; border-radius:50%; border:none;
+    background:#fff; font-size:20px; box-shadow:0 2px 8px rgba(0,0,0,.3); cursor:pointer;
+  }
+  .fab-list {
+    position:absolute; right:21px; bottom:156px; z-index:1000;
+    width:44px; height:44px; border-radius:50%; border:none;
+    background:#fff; font-size:18px; box-shadow:0 2px 8px rgba(0,0,0,.3); cursor:pointer;
+  }
+
+  /* 場所選択中バナー */
+  #pickBanner {
+    display:none; position:absolute; bottom:0; left:0; right:0; z-index:1001;
+    background:#1a73e8; color:#fff; text-align:center; padding:14px; font-size:14px;
+  }
+
+  /* モーダル */
+  .overlay {
+    display:none; position:fixed; inset:0; z-index:2000;
+    background:rgba(0,0,0,.45); align-items:flex-end; justify-content:center;
+  }
+  .overlay.show { display:flex; }
+  .sheet {
+    background:#fff; width:100%; max-width:520px; max-height:88vh; overflow-y:auto;
+    border-radius:16px 16px 0 0; padding:18px 16px 26px;
+  }
+  .sheet h2 { font-size:16px; margin-bottom:14px; }
+  .field { margin-bottom:12px; }
+  .field label { display:block; font-size:12px; color:#555; margin-bottom:4px; }
+  .field input, .field textarea, .field select {
+    width:100%; padding:10px; border:1px solid #ccc; border-radius:8px; font-size:16px;
+  }
+  .field textarea { height:70px; resize:vertical; }
+  .cat-grid { display:flex; flex-wrap:wrap; gap:8px; }
+  .cat-opt {
+    padding:8px 12px; border-radius:10px; border:2px solid #ddd;
+    font-size:13px; cursor:pointer; user-select:none; background:#fafafa;
+  }
+  .cat-opt.sel { border-color:#1a73e8; background:#e8f0fe; }
+  .row2 { display:flex; gap:10px; }
+  .row2 .field { flex:1; }
+  .btn {
+    width:100%; padding:13px; border:none; border-radius:10px;
+    font-size:15px; font-weight:bold; cursor:pointer; margin-top:6px;
+  }
+  .btn-primary { background:#1a73e8; color:#fff; }
+  .btn-ghost { background:#f0f0f0; color:#333; }
+  .btn-danger { background:#fce8e6; color:#c5221f; }
+
+  /* ポップアップ */
+  .pop { font-size:13px; min-width:190px; }
+  .pop .pcat { font-weight:bold; font-size:14px; margin-bottom:4px; }
+  .pop .ptitle { font-size:14px; font-weight:bold; margin-bottom:4px; }
+  .pop .pmeta { color:#666; font-size:11px; margin-top:6px; }
+  .pop .pbtns { display:flex; gap:6px; margin-top:8px; }
+  .pop .pbtns button {
+    flex:1; padding:7px; border:none; border-radius:7px; font-size:12px; cursor:pointer;
+  }
+
+  /* 一覧 */
+  #listPanel .item {
+    padding:11px 6px; border-bottom:1px solid #eee; cursor:pointer;
+    display:flex; gap:10px; align-items:center;
+  }
+  #listPanel .item .ic { font-size:22px; }
+  #listPanel .item .tt { font-size:14px; font-weight:bold; }
+  #listPanel .item .sub { font-size:11px; color:#777; }
+
+  /* マーカー */
+  .emoji-pin { background:none; border:none; }
+  .emoji-pin .pin {
+    display:flex; align-items:center; justify-content:center;
+    width:38px; height:38px; border-radius:50% 50% 50% 0; transform:rotate(-45deg);
+    box-shadow:1px 2px 5px rgba(0,0,0,.4); border:2px solid #fff;
+  }
+  .emoji-pin .pin span { transform:rotate(45deg); font-size:18px; }
+
+  .toast {
+    position:fixed; bottom:90px; left:50%; transform:translateX(-50%);
+    background:#333; color:#fff; padding:10px 18px; border-radius:20px;
+    font-size:13px; z-index:3000; opacity:0; transition:opacity .3s; pointer-events:none;
+    white-space:nowrap;
+  }
+  .toast.show { opacity:1; }
+</style>
+</head>
+<body>
+
+<div id="map"></div>
+
+<div class="header">
+  <h1>🗺️ 災害・工事情報共有マップ<span class="ver">Ver.2</span></h1>
+  <span id="modeBadge" class="mode-badge mode-local">ローカル</span>
+  <button class="icon-btn" onclick="openSearch()" title="市町村検索">🔍</button>
+  <button class="icon-btn" onclick="location.reload()" title="更新">🔄</button>
+  <button class="icon-btn" onclick="openSettings()">⚙️</button>
+</div>
+
+<div class="filters" id="filterBar"></div>
+
+<button class="fab-list" onclick="openList()" title="一覧">📋</button>
+<button class="fab-loc" onclick="goMyLocation()" title="現在地">📍</button>
+<button class="fab" id="fabAdd" onclick="toggleAddMode()">＋</button>
+<div id="pickBanner">📌 登録したい場所を地図上でタップしてください</div>
+
+<!-- 登録/編集フォーム -->
+<div class="overlay" id="formOverlay">
+  <div class="sheet">
+    <h2 id="formTitle">情報を登録</h2>
+    <div class="field">
+      <label>種類 *</label>
+      <div class="cat-grid" id="catGrid"></div>
+    </div>
+    <div class="field">
+      <label>タイトル *（例：〇〇橋付近 片側交互通行）</label>
+      <input id="fTitle" maxlength="60">
+    </div>
+    <div class="field">
+      <label>詳細メモ</label>
+      <textarea id="fDetail" maxlength="500"></textarea>
+    </div>
+    <div class="row2">
+      <div class="field"><label>開始日</label><input type="date" id="fStart"></div>
+      <div class="field"><label>終了日（予定）</label><input type="date" id="fEnd"></div>
+    </div>
+    <div class="field">
+      <label>登録者名</label>
+      <input id="fReporter" maxlength="20">
+    </div>
+    <button class="btn btn-primary" onclick="saveForm()">保存する</button>
+    <button class="btn btn-ghost" onclick="closeForm()">キャンセル</button>
+  </div>
+</div>
+
+<!-- 一覧 -->
+<div class="overlay" id="listOverlay" onclick="if(event.target===this)this.classList.remove('show')">
+  <div class="sheet">
+    <h2>登録一覧</h2>
+    <div id="listPanel"></div>
+    <button class="btn btn-ghost" onclick="document.getElementById('listOverlay').classList.remove('show')">閉じる</button>
+  </div>
+</div>
+
+<!-- 市町村検索 -->
+<div class="overlay" id="searchOverlay" onclick="if(event.target===this)this.classList.remove('show')">
+  <div class="sheet">
+    <h2>🔍 市町村検索</h2>
+    <div class="field">
+      <input id="searchInput" placeholder="例：長野市、白馬村" onkeydown="if(event.key==='Enter')doSearch()">
+    </div>
+    <button class="btn btn-primary" onclick="doSearch()">検索</button>
+    <div id="searchResults" style="margin-top:10px"></div>
+    <button class="btn btn-ghost" onclick="document.getElementById('searchOverlay').classList.remove('show')">閉じる</button>
+  </div>
+</div>
+
+<!-- 設定 -->
+<div class="overlay" id="settingsOverlay" onclick="if(event.target===this)this.classList.remove('show')">
+  <div class="sheet">
+    <h2>⚙️ 設定</h2>
+    <div class="field">
+      <label>共有モード（Firebase設定）</label>
+      <div style="font-size:12px;color:#666;line-height:1.6;margin-bottom:6px">
+        未設定の場合は「ローカルモード」（この端末のみ保存）で動作します。<br>
+        職場で共有するには、付属の手順書に従ってFirebaseの設定コードを貼り付けてください。
+      </div>
+      <textarea id="fbConfig" style="height:120px;font-size:12px;font-family:monospace"
+        placeholder='{ "apiKey": "...", "authDomain": "...", "databaseURL": "...", "projectId": "...", ... }'></textarea>
+    </div>
+    <button class="btn btn-primary" onclick="saveFbConfig()">設定を保存して再読み込み</button>
+
+    <button class="btn btn-ghost" onclick="showInviteQR()">📱 招待用QRコードを表示</button>
+    <div class="field" style="margin-top:6px">
+      <label>招待用PIN（代表者のみ設定／QR発行時に必要）
+        <span id="invitePinStatus" style="color:#888"></span>
+      </label>
+      <div class="row2">
+        <div class="field" style="margin-bottom:6px"><input id="invitePinInput" placeholder="4文字以上" maxlength="20"></div>
+        <div class="field" style="max-width:110px;margin-bottom:6px">
+          <button class="btn btn-ghost" style="margin-top:0" onclick="setInvitePin()">PIN設定</button>
+        </div>
+      </div>
+      <div style="font-size:11px;color:#888;line-height:1.5">
+        PINを設定すると、QR発行時にPIN入力が必要になります（＝招待を代表者だけに限定）。<br>
+        空欄のまま「PIN設定」を押すとPINを解除します（誰でも発行可能に戻ります）。
+      </div>
+    </div>
+
+    <div class="field" style="margin-top:16px">
+      <label>カテゴリの追加（全員に共有されます）</label>
+      <div class="row2">
+        <div class="field"><input id="newCatName" placeholder="名前（例：倒木）" maxlength="10"></div>
+        <div class="field" style="max-width:80px"><input id="newCatEmoji" placeholder="絵文字" maxlength="2"></div>
+      </div>
+      <button class="btn btn-ghost" onclick="addCategory()">カテゴリを追加</button>
+    </div>
+    <button class="btn btn-danger" onclick="exportData()">データをファイルに書き出す（バックアップ）</button>
+    <button class="btn btn-danger" onclick="deleteAll()">🗑 登録情報を一括削除</button>
+    <button class="btn btn-ghost" onclick="document.getElementById('settingsOverlay').classList.remove('show')">閉じる</button>
+  </div>
+</div>
+
+<!-- 招待QR -->
+<div class="overlay" id="qrOverlay" onclick="if(event.target===this)this.classList.remove('show')">
+  <div class="sheet" style="text-align:center">
+    <h2>📱 招待用QRコード</h2>
+    <div style="font-size:12px;color:#666;margin-bottom:12px;line-height:1.6">
+      メンバーがスマホでスキャンすると、設定済みの地図が開きます。<br>
+      <b>このQR自体が鍵です。職場外に出さないでください。</b>
+    </div>
+    <div id="qrBox" style="display:flex;justify-content:center;padding:10px"></div>
+    <button class="btn btn-ghost" onclick="document.getElementById('qrOverlay').classList.remove('show')">閉じる</button>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+'use strict';
+
+/* ===== カテゴリ定義 ===== */
+const DEFAULT_CATS = [
+  { id:'kouji',   name:'道路工事', emoji:'🚧', color:'#f9a825' },
+  { id:'dosha',   name:'土砂崩れ', emoji:'⛰️', color:'#8d6e63' },
+  { id:'shinsui', name:'浸水',     emoji:'🌊', color:'#1e88e5' },
+  { id:'tsuko',   name:'通行止め', emoji:'⛔', color:'#e53935' },
+  { id:'sonota',  name:'その他',   emoji:'📌', color:'#7b1fa2' },
+];
+const EXTRA_COLORS = ['#00897b','#5e35b1','#d81b60','#43a047','#fb8c00','#3949ab'];
+let categories = [...DEFAULT_CATS];
+let activeFilters = new Set(DEFAULT_CATS.map(c=>c.id));
+
+/* ===== 状態 ===== */
+let reports = {};          // id -> report
+let markers = {};          // id -> Leaflet marker
+let addMode = false;
+let editingId = null;
+let pendingLatLng = null;
+let db = null;             // Firebase database (null = ローカルモード)
+let invitePinHash = null;  // 招待PINのハッシュ（DBから取得・null=未設定）
+
+/* ===== 地図 ===== */
+const map = L.map('map', { zoomControl:false }).setView([36.0, 138.0], 6);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  attribution:'© OpenStreetMap contributors', maxZoom:19
+}).addTo(map);
+L.control.zoom({ position:'bottomleft' }).addTo(map);
+
+// 前回表示位置を復元
+try {
+  const v = JSON.parse(localStorage.getItem('mapView'));
+  if (v) map.setView([v.lat, v.lng], v.z);
+} catch(e){}
+map.on('moveend', () => {
+  const c = map.getCenter();
+  localStorage.setItem('mapView', JSON.stringify({ lat:c.lat, lng:c.lng, z:map.getZoom() }));
+});
+
+map.on('click', e => {
+  if (!addMode) return;
+  pendingLatLng = e.latlng;
+  toggleAddMode(true);
+  openForm();
+});
+
+/* ===== Firebase / ローカル 初期化 ===== */
+function getCat(id){ return categories.find(c=>c.id===id) || categories[categories.length-1]; }
+
+/* URLに #cfg= が付いていたら設定を自動取り込み（招待QR用） */
+(function importFromHash() {
+  if (!location.hash.startsWith('#cfg=')) return;
+  try {
+    const cfg = JSON.parse(atob(decodeURIComponent(location.hash.slice(5))));
+    if (cfg && cfg.databaseURL) {
+      localStorage.setItem('fbConfig', JSON.stringify(cfg));
+    }
+  } catch(e) {}
+  history.replaceState(null, '', location.pathname + location.search);
+})();
+
+function init() {
+  let cfg = null;
+  try { cfg = JSON.parse(localStorage.getItem('fbConfig')); } catch(e){}
+  if (cfg && cfg.databaseURL) {
+    try {
+      firebase.initializeApp(cfg);
+      db = firebase.database();
+      document.getElementById('modeBadge').textContent = '共有中';
+      document.getElementById('modeBadge').className = 'mode-badge mode-online';
+      // リアルタイム購読
+      db.ref('reports').on('value', snap => {
+        reports = snap.val() || {};
+        renderAll();
+      }, err => { toast('接続エラー: ' + err.message); });
+      db.ref('categories').on('value', snap => {
+        const extra = snap.val() || {};
+        categories = [...DEFAULT_CATS, ...Object.values(extra)];
+        Object.values(extra).forEach(c => activeFilters.add(c.id));
+        renderFilters(); renderAll();
+      });
+      // 招待PINハッシュの購読
+      db.ref('inviteAuth/pinHash').on('value', snap => { invitePinHash = snap.val() || null; });
+      return;
+    } catch(e) { toast('Firebase設定エラー。ローカルモードで起動します'); }
+  }
+  // ローカルモード
+  try { reports = JSON.parse(localStorage.getItem('reports')) || {}; } catch(e){ reports = {}; }
+  try {
+    const extra = JSON.parse(localStorage.getItem('extraCats')) || [];
+    categories = [...DEFAULT_CATS, ...extra];
+    extra.forEach(c => activeFilters.add(c.id));
+  } catch(e){}
+  renderFilters(); renderAll();
+}
+
+/* ===== データ保存 ===== */
+function persistReport(id, data) {
+  if (db) {
+    db.ref('reports/' + id).set(data).catch(e => toast('保存失敗: ' + e.message));
+  } else {
+    reports[id] = data;
+    localStorage.setItem('reports', JSON.stringify(reports));
+    renderAll();
+  }
+}
+function removeReport(id) {
+  if (db) {
+    db.ref('reports/' + id).remove().catch(e => toast('削除失敗: ' + e.message));
+  } else {
+    delete reports[id];
+    localStorage.setItem('reports', JSON.stringify(reports));
+    renderAll();
+  }
+}
+
+/* ===== マーカー描画 ===== */
+function makeIcon(cat) {
+  return L.divIcon({
+    className:'emoji-pin',
+    html:`<div class="pin" style="background:${cat.color}"><span>${cat.emoji}</span></div>`,
+    iconSize:[38,38], iconAnchor:[8,38], popupAnchor:[11,-36]
+  });
+}
+function fmtDate(s){ return s ? s.replace(/-/g,'/') : ''; }
+
+function popupHtml(id, r) {
+  const cat = getCat(r.category);
+  let period = '';
+  if (r.startDate || r.endDate) period = `期間: ${fmtDate(r.startDate)||'?'} 〜 ${fmtDate(r.endDate)||'未定'}`;
+  return `<div class="pop">
+    <div class="pcat" style="color:${cat.color}">${cat.emoji} ${cat.name}</div>
+    <div class="ptitle">${esc(r.title)}</div>
+    ${r.detail ? `<div>${esc(r.detail).replace(/\n/g,'<br>')}</div>` : ''}
+    ${period ? `<div class="pmeta">${period}</div>` : ''}
+    <div class="pmeta">登録: ${esc(r.reporter||'匿名')} / ${new Date(r.createdAt).toLocaleString('ja-JP',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'})}</div>
+    <div class="pbtns">
+      <button style="background:#e8f0fe;color:#1a73e8" onclick="editReport('${id}')">✏️ 編集</button>
+      <button style="background:#fce8e6;color:#c5221f" onclick="confirmDelete('${id}')">🗑 削除</button>
+    </div>
+  </div>`;
+}
+
+function renderAll() {
+  // 既存マーカー削除
+  Object.values(markers).forEach(m => map.removeLayer(m));
+  markers = {};
+  Object.entries(reports).forEach(([id, r]) => {
+    if (!activeFilters.has(r.category) && getCat(r.category).id !== r.category) {
+      // 未知カテゴリは「その他」扱いで表示判定
+      if (!activeFilters.has('sonota')) return;
+    } else if (!activeFilters.has(r.category)) return;
+    const m = L.marker([r.lat, r.lng], { icon: makeIcon(getCat(r.category)) })
+      .addTo(map)
+      .bindPopup(() => popupHtml(id, r), { maxWidth:280 });
+    markers[id] = m;
+  });
+}
+
+/* ===== フィルタ ===== */
+function renderFilters() {
+  const bar = document.getElementById('filterBar');
+  bar.innerHTML = '';
+  categories.forEach(c => {
+    const el = document.createElement('div');
+    el.className = 'chip' + (activeFilters.has(c.id) ? '' : ' off');
+    el.style.borderColor = c.color;
+    el.textContent = `${c.emoji} ${c.name}`;
+    el.onclick = () => {
+      activeFilters.has(c.id) ? activeFilters.delete(c.id) : activeFilters.add(c.id);
+      renderFilters(); renderAll();
+    };
+    bar.appendChild(el);
+  });
+}
+
+/* ===== 追加モード ===== */
+function toggleAddMode(forceOff) {
+  addMode = forceOff === true ? false : !addMode;
+  const fab = document.getElementById('fabAdd');
+  fab.textContent = addMode ? '✕' : '＋';
+  fab.className = 'fab' + (addMode ? ' cancel' : '');
+  document.getElementById('pickBanner').style.display = addMode ? 'block' : 'none';
+}
+
+/* ===== フォーム ===== */
+let selCat = 'kouji';
+function renderCatGrid() {
+  const g = document.getElementById('catGrid');
+  g.innerHTML = '';
+  categories.forEach(c => {
+    const el = document.createElement('div');
+    el.className = 'cat-opt' + (selCat === c.id ? ' sel' : '');
+    el.textContent = `${c.emoji} ${c.name}`;
+    el.onclick = () => { selCat = c.id; renderCatGrid(); };
+    g.appendChild(el);
+  });
+}
+function openForm(r) {
+  document.getElementById('formTitle').textContent = r ? '情報を編集' : '情報を登録';
+  selCat = r ? r.category : 'kouji';
+  document.getElementById('fTitle').value = r ? r.title : '';
+  document.getElementById('fDetail').value = r ? (r.detail||'') : '';
+  document.getElementById('fStart').value = r ? (r.startDate||'') : new Date().toISOString().slice(0,10);
+  document.getElementById('fEnd').value = r ? (r.endDate||'') : '';
+  document.getElementById('fReporter').value = r ? (r.reporter||'') : (localStorage.getItem('myName')||'');
+  renderCatGrid();
+  document.getElementById('formOverlay').classList.add('show');
+}
+function closeForm() {
+  document.getElementById('formOverlay').classList.remove('show');
+  editingId = null; pendingLatLng = null;
+}
+function saveForm() {
+  const title = document.getElementById('fTitle').value.trim();
+  if (!title) { toast('タイトルを入力してください'); return; }
+  const reporter = document.getElementById('fReporter').value.trim();
+  localStorage.setItem('myName', reporter);
+  const base = editingId ? reports[editingId] : {};
+  const id = editingId || ('r' + Date.now() + Math.random().toString(36).slice(2,6));
+  const data = {
+    lat: editingId ? base.lat : pendingLatLng.lat,
+    lng: editingId ? base.lng : pendingLatLng.lng,
+    category: selCat,
+    title,
+    detail: document.getElementById('fDetail').value.trim(),
+    startDate: document.getElementById('fStart').value,
+    endDate: document.getElementById('fEnd').value,
+    reporter,
+    createdAt: editingId ? base.createdAt : Date.now(),
+    updatedAt: Date.now()
+  };
+  persistReport(id, data);
+  closeForm();
+  toast('保存しました ✅');
+}
+function editReport(id) {
+  editingId = id;
+  map.closePopup();
+  openForm(reports[id]);
+}
+function confirmDelete(id) {
+  if (confirm('この情報を削除しますか？\n（全員の地図から消えます）')) {
+    map.closePopup();
+    removeReport(id);
+    toast('削除しました');
+  }
+}
+
+/* ===== 一覧 ===== */
+function openList() {
+  const p = document.getElementById('listPanel');
+  const arr = Object.entries(reports).sort((a,b)=>b[1].createdAt-a[1].createdAt);
+  p.innerHTML = arr.length ? '' : '<div style="padding:20px;text-align:center;color:#999">まだ登録がありません</div>';
+  arr.forEach(([id, r]) => {
+    const cat = getCat(r.category);
+    const el = document.createElement('div');
+    el.className = 'item';
+    el.innerHTML = `<div class="ic">${cat.emoji}</div>
+      <div><div class="tt">${esc(r.title)}</div>
+      <div class="sub">${cat.name}・${esc(r.reporter||'匿名')}・${new Date(r.createdAt).toLocaleDateString('ja-JP')}</div></div>`;
+    el.onclick = () => {
+      document.getElementById('listOverlay').classList.remove('show');
+      map.setView([r.lat, r.lng], Math.max(map.getZoom(), 15));
+      if (markers[id]) markers[id].openPopup();
+    };
+    p.appendChild(el);
+  });
+  document.getElementById('listOverlay').classList.add('show');
+}
+
+/* ===== 現在地 ===== */
+function goMyLocation() {
+  if (!navigator.geolocation) { toast('位置情報が使えません'); return; }
+  toast('現在地を取得中…');
+  navigator.geolocation.getCurrentPosition(
+    pos => map.setView([pos.coords.latitude, pos.coords.longitude], 16),
+    () => toast('現在地を取得できませんでした'),
+    { enableHighAccuracy:true, timeout:8000 }
+  );
+}
+
+/* ===== 設定 ===== */
+function openSettings() {
+  document.getElementById('fbConfig').value = localStorage.getItem('fbConfig') || '';
+  const st = document.getElementById('invitePinStatus');
+  if (!db) st.textContent = '（共有モードのみ）';
+  else st.textContent = invitePinHash ? '🔒 設定済み' : '未設定（誰でも発行可）';
+  document.getElementById('settingsOverlay').classList.add('show');
+}
+function saveFbConfig() {
+  const raw = document.getElementById('fbConfig').value.trim();
+  if (!raw) { localStorage.removeItem('fbConfig'); location.reload(); return; }
+  // { } の部分だけ抜き出す（const firebaseConfig = ... ごと貼ってもOK）
+  const s = raw.indexOf('{'), e = raw.lastIndexOf('}');
+  if (s === -1 || e === -1) { toast('設定が見つかりません。{ } を含めて貼り付けてください'); return; }
+  let txt = raw.slice(s, e + 1);
+  let cfg = null;
+  try { cfg = JSON.parse(txt); } catch(err) {
+    // JS形式（項目名に"なし）を自動補正して再挑戦
+    try {
+      const fixed = txt
+        .replace(/^\s*\/\/[^\n]*/gm, '')                              // 行頭コメント除去（URL内の//は対象外）
+        .replace(/([{\s,])([A-Za-z_][A-Za-z0-9_]*)\s*:/g, '$1"$2":') // 項目名を"で囲む
+        .replace(/'/g, '"')                                          // 'を"に
+        .replace(/,\s*}/g, '}');                                     // 末尾カンマ除去
+      cfg = JSON.parse(fixed);
+    } catch(err2) { toast('設定を読み取れませんでした。Firebaseのコードをそのまま貼り付けてください'); return; }
+  }
+  if (!cfg.databaseURL) {
+    toast('databaseURL がありません。FirebaseでRealtime Database作成後のコードを使ってください');
+    return;
+  }
+  localStorage.setItem('fbConfig', JSON.stringify(cfg));
+  location.reload();
+}
+
+/* ===== 招待PIN ===== */
+async function sha256(str) {
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+async function setInvitePin() {
+  if (!db) { toast('共有モード（Firebase設定済み）で設定してください'); return; }
+  const pin = (document.getElementById('invitePinInput').value || '').trim();
+  if (!pin) {
+    if (confirm('招待PINを解除しますか？\n（解除すると誰でも招待QRを発行できます）')) {
+      db.ref('inviteAuth/pinHash').remove();
+      toast('招待PINを解除しました');
+      document.getElementById('invitePinStatus').textContent = '未設定（誰でも発行可）';
+    }
+    return;
+  }
+  if (pin.length < 4) { toast('PINは4文字以上にしてください'); return; }
+  const h = await sha256(pin);
+  db.ref('inviteAuth/pinHash').set(h)
+    .then(() => {
+      document.getElementById('invitePinInput').value = '';
+      document.getElementById('invitePinStatus').textContent = '🔒 設定済み';
+      toast('招待PINを設定しました 🔒');
+    })
+    .catch(e => toast('PIN設定に失敗: ' + e.message));
+}
+
+async function showInviteQR() {
+  const cfg = localStorage.getItem('fbConfig');
+  if (!cfg) { toast('先にFirebase設定を保存してください'); return; }
+  if (location.protocol === 'file:') {
+    toast('QRはWeb公開後のURL（Netlify等）で開いてから作成してください');
+    return;
+  }
+  // PINが設定されていれば入力を要求
+  if (invitePinHash) {
+    const input = prompt('招待用PINを入力してください');
+    if (input === null) return;
+    const h = await sha256(input.trim());
+    if (h !== invitePinHash) { toast('PINが違います。発行できません'); return; }
+  }
+  const url = location.origin + location.pathname + '#cfg=' + encodeURIComponent(btoa(cfg));
+  const box = document.getElementById('qrBox');
+  box.innerHTML = '';
+  new QRCode(box, { text: url, width: 230, height: 230, correctLevel: QRCode.CorrectLevel.M });
+  document.getElementById('settingsOverlay').classList.remove('show');
+  document.getElementById('qrOverlay').classList.add('show');
+}
+
+function addCategory() {
+  const name = document.getElementById('newCatName').value.trim();
+  const emoji = document.getElementById('newCatEmoji').value.trim() || '📍';
+  if (!name) { toast('カテゴリ名を入力してください'); return; }
+  const id = 'c' + Date.now();
+  const color = EXTRA_COLORS[categories.length % EXTRA_COLORS.length];
+  const cat = { id, name, emoji, color };
+  if (db) {
+    db.ref('categories/' + id).set(cat);
+  } else {
+    const extra = JSON.parse(localStorage.getItem('extraCats')||'[]');
+    extra.push(cat);
+    localStorage.setItem('extraCats', JSON.stringify(extra));
+    categories.push(cat); activeFilters.add(id);
+    renderFilters();
+  }
+  document.getElementById('newCatName').value = '';
+  document.getElementById('newCatEmoji').value = '';
+  toast('カテゴリを追加しました');
+}
+function deleteAll() {
+  if (!confirm('登録された情報を【全て】削除しますか？\n（共有モードの場合、全員の地図から消えます）')) return;
+  const v = prompt('確認のため「削除」と入力してください');
+  if (v !== '削除') { toast('キャンセルしました'); return; }
+  if (db) {
+    db.ref('reports').remove().then(()=>toast('全て削除しました')).catch(e=>toast('削除失敗: '+e.message));
+  } else {
+    reports = {};
+    localStorage.setItem('reports', '{}');
+    renderAll();
+    toast('全て削除しました');
+  }
+}
+
+/* ===== 市町村検索 ===== */
+function openSearch() {
+  document.getElementById('searchOverlay').classList.add('show');
+  document.getElementById('searchResults').innerHTML = '';
+  const inp = document.getElementById('searchInput');
+  inp.value = '';
+  setTimeout(()=>inp.focus(), 100);
+}
+async function doSearch() {
+  const q = document.getElementById('searchInput').value.trim();
+  if (!q) return;
+  const box = document.getElementById('searchResults');
+  box.innerHTML = '<div style="padding:10px;color:#888;font-size:13px">検索中…</div>';
+  try {
+    const res = await fetch('https://nominatim.openstreetmap.org/search?format=json&countrycodes=jp&limit=5&accept-language=ja&q=' + encodeURIComponent(q));
+    const arr = await res.json();
+    if (!arr.length) { box.innerHTML = '<div style="padding:10px;color:#888;font-size:13px">見つかりませんでした。市町村名を確認してください</div>'; return; }
+    box.innerHTML = '';
+    arr.forEach(r => {
+      const el = document.createElement('div');
+      el.className = 'item';
+      el.style.cssText = 'padding:11px 6px;border-bottom:1px solid #eee;cursor:pointer;font-size:13px';
+      el.textContent = '📍 ' + r.display_name;
+      el.onclick = () => {
+        document.getElementById('searchOverlay').classList.remove('show');
+        map.setView([parseFloat(r.lat), parseFloat(r.lon)], 13);
+      };
+      box.appendChild(el);
+    });
+  } catch(e) {
+    box.innerHTML = '<div style="padding:10px;color:#c00;font-size:13px">検索エラー。通信環境を確認してください</div>';
+  }
+}
+
+function exportData() {
+  const blob = new Blob([JSON.stringify({ reports, categories }, null, 2)], { type:'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'map-backup-' + new Date().toISOString().slice(0,10) + '.json';
+  a.click();
+}
+
+/* ===== ユーティリティ ===== */
+function esc(s){ return String(s).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
+let toastTimer;
+function toast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(()=>t.classList.remove('show'), 2500);
+}
+
+init();
+</script>
+</body>
+</html>
